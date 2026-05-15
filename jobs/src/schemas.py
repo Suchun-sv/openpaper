@@ -4,9 +4,13 @@ Pydantic schemas for PDF processing.
 from enum import Enum
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
-class ResponseCitation(BaseModel):
+
+class StrictSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+class ResponseCitation(StrictSchema):
     """
     Schema for a citation in the paper.
     This is used to represent a single citation with its text and context.
@@ -28,7 +32,7 @@ class HighlightType(str, Enum):
     RESULT = "result"
     IMPACT = "impact"
 
-class AIHighlight(BaseModel):
+class AIHighlight(StrictSchema):
     """
     Schema for a highlight in the paper.
     This is used to represent a single highlight with its text and context.
@@ -46,7 +50,7 @@ class AIHighlight(BaseModel):
     )
 
 
-class TitleAuthorsAbstract(BaseModel):
+class TitleAuthorsAbstract(StrictSchema):
     """Schema for title, authors, and abstract extraction."""
     title: str = Field(description="Title of the paper **in normal case**")
     authors: List[str] = Field(default=[], description="List of authors")
@@ -56,7 +60,7 @@ class TitleAuthorsAbstract(BaseModel):
     )
 
 
-class InstitutionsKeywords(BaseModel):
+class InstitutionsKeywords(StrictSchema):
     """Schema for institutions and keywords extraction."""
     institutions: List[str] = Field(
         default=[], description="List of institutions involved in the publication."
@@ -64,7 +68,7 @@ class InstitutionsKeywords(BaseModel):
     keywords: List[str] = Field(default=[], description="List of keywords")
 
 
-class SummaryAndCitations(BaseModel):
+class SummaryAndCitations(StrictSchema):
     """Schema for summary and citations extraction."""
     summary_citations: List[ResponseCitation] = Field(
         description="List of citations supporting the summary. Include direct quotes or paraphrases with the citation index. The index should match the inline citations used in the summary. Only include citations that are directly relevant to the summary content. Use sequential numbering starting from 1."
@@ -94,7 +98,7 @@ class SummaryAndCitations(BaseModel):
     )
 
 
-class Highlights(BaseModel):
+class Highlights(StrictSchema):
     """Schema for highlights extraction."""
     highlights: List[AIHighlight] = Field(
         default=[],
@@ -138,7 +142,7 @@ Think: "If I could only share 3-5 insights from this paper with a colleague, wha
     )
 
 
-class PaperMetadataExtraction(BaseModel):
+class PaperMetadataExtraction(StrictSchema):
     """Extracted metadata from a paper"""
     title: str = Field(description="Title of the paper in normal case")
     authors: List[str] = Field(default=[], description="List of authors")
@@ -185,7 +189,7 @@ The summary should be accessible to readers with basic domain knowledge while ma
     )
 
 
-class PDFProcessingResult(BaseModel):
+class PDFProcessingResult(StrictSchema):
     """Result of PDF processing"""
     success: bool
     job_id: str
@@ -199,12 +203,12 @@ class PDFProcessingResult(BaseModel):
     error: Optional[str] = None
     duration: Optional[float] = None  # Duration in seconds
 
-class DocumentMapping(BaseModel):
+class DocumentMapping(StrictSchema):
     title: str
     s3_object_key: str
     id: str
 
-class DataTableSchema(BaseModel):
+class DataTableSchema(StrictSchema):
     columns: List[str] = Field(
         description="List of column names in the data table."
     )
@@ -212,7 +216,7 @@ class DataTableSchema(BaseModel):
         description="List of papers included in the data table."
     )
 
-class DataTableCellValue(BaseModel):
+class DataTableCellValue(StrictSchema):
     """Value for a single cell in the data table with supporting citations."""
     value: str = Field(description="The extracted value for this column")
     citations: List[ResponseCitation] = Field(
@@ -220,11 +224,11 @@ class DataTableCellValue(BaseModel):
         description="List of citations that support this specific value. These should be direct quotes or paraphrases from the paper."
     )
 
-class DataTableRow(BaseModel):
+class DataTableRow(StrictSchema):
     paper_id: str
     values: dict[str, DataTableCellValue]  # column_name -> cell value with citations
 
-class DataTableResult(BaseModel):
+class DataTableResult(StrictSchema):
     success: bool
     columns: List[str] = Field(
         description="List of column names in the data table."

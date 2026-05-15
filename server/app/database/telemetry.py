@@ -14,21 +14,25 @@ logger = logging.getLogger(__name__)
 POSTHOG_API_KEY = os.getenv("POSTHOG_API_KEY", None)
 DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
 
-posthog = Posthog(
-    POSTHOG_API_KEY,
-    host="https://us.i.posthog.com",
-    enable_exception_autocapture=True,
-)
+posthog = None
+posthog_sync = None
 
-posthog_sync = Posthog(
-    POSTHOG_API_KEY,
-    host="https://us.i.posthog.com",
-    sync_mode=True,
-    enable_exception_autocapture=True,
-)
+if POSTHOG_API_KEY:
+    posthog = Posthog(
+        POSTHOG_API_KEY,
+        host="https://us.i.posthog.com",
+        enable_exception_autocapture=True,
+    )
 
-if DEBUG:
-    posthog.debug = True
+    posthog_sync = Posthog(
+        POSTHOG_API_KEY,
+        host="https://us.i.posthog.com",
+        sync_mode=True,
+        enable_exception_autocapture=True,
+    )
+
+    if DEBUG:
+        posthog.debug = True
 
 
 def _lookup_subscription(db: Optional[Session], user_id: str):

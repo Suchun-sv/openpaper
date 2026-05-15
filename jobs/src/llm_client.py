@@ -9,11 +9,13 @@ import io
 import asyncio
 import random
 import httpx
+from openai import AsyncOpenAI
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
 from typing import Any, Dict, List, Optional, Type, TypeVar, Callable
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, create_model, Field, ConfigDict
 
 from src.prompts import EXTRACT_COLS_INSTRUCTION, SYSTEM_INSTRUCTIONS_CACHE, EXTRACT_METADATA_PROMPT_TEMPLATE
@@ -29,10 +31,18 @@ from src.schemas import (
 from src.utils import retry_llm_operation, time_it
 
 logger = logging.getLogger(__name__)
+load_dotenv()
 
 # Constants
-DEFAULT_CHAT_MODEL = "gemini-3.1-pro-preview"
-FAST_CHAT_MODEL = "gemini-3-flash-preview"
+DEFAULT_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "openai").lower()
+DEFAULT_CHAT_MODEL = os.getenv(
+    "DEFAULT_CHAT_MODEL",
+    "gpt-5.4" if DEFAULT_PROVIDER == "openai" else "gemini-3.1-pro-preview",
+)
+FAST_CHAT_MODEL = os.getenv(
+    "FAST_CHAT_MODEL",
+    "gpt-4.1" if DEFAULT_PROVIDER == "openai" else "gemini-3-flash-preview",
+)
 CACHE_TTL_SECONDS = 3600
 
 # Pydantic model type variable
@@ -89,20 +99,31 @@ class AsyncLLMClient:
         self,
         api_key: str,
         default_model: Optional[str] = None,
+        provider: str = DEFAULT_PROVIDER,
     ):
         self.api_key = api_key
         self.default_model: str = default_model or DEFAULT_CHAT_MODEL
+        self.provider = provider.lower()
+        self.base_url = os.getenv("OPENAI_BASE_URL")
 
-    def _create_client(self, timeout: int = DEFAULT_TIMEOUT) -> genai.Client:
-        """Create a fresh client instance for thread-safe concurrent calls."""
+    def _create_client(self, timeout: int = DEFAULT_TIMEOUT) -> Any:
+        """Create a fresh provider client instance for concurrent calls."""
         if not self.api_key:
             raise ValueError("API key is not set")
-        return genai.Client(
-            api_key=self.api_key,
-            http_options=types.HttpOptions(timeout=timeout),
-        )
+        if self.provider == "openai":
+            return AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=timeout / 1000,
+            )
+        if self.provider == "gemini":
+            return genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=timeout),
+            )
+        raise ValueError(f"Unsupported provider: {self.provider}")
 
-    async def create_cache(self, cache_content: str, client: genai.Client, model: Optional[str] = None) -> str:
+    async def create_cache(self, cache_content: str, client: Any, model: Optional[str] = None) -> Optional[str]:
         """Create a cache entry for the given content.
 
         Args:
@@ -113,6 +134,9 @@ class AsyncLLMClient:
         Returns:
             str: The cache key for the stored content.
         """
+        if self.provider != "gemini":
+            return None
+
         cached_content = await client.aio.caches.create(
             model=model or self.default_model,
             config=types.CreateCachedContentConfig(
@@ -139,7 +163,7 @@ class AsyncLLMClient:
     async def create_file_cache(
         self,
         file_path: str,
-        client: genai.Client,
+        client: Any,
         system_instructions: Optional[str] = None,
     ):
         """Create a cache entry for the given file.
@@ -151,6 +175,9 @@ class AsyncLLMClient:
         Returns:
             str: The cache key for the stored file.
         """
+        if self.provider != "gemini":
+            return None
+
         # Read the file content
         with open(file_path, 'rb') as f:
             file_content = f.read()
@@ -192,7 +219,7 @@ class AsyncLLMClient:
         file_path: Optional[str] = None,
         max_retries: int = 3,
         base_delay: float = 1.0,
-        client: Optional[genai.Client] = None,
+        client: Optional[Any] = None,
     ) -> str:
         """
         Generate content using the LLM with automatic retry and exponential backoff.
@@ -212,6 +239,69 @@ class AsyncLLMClient:
 
         if not model:
             model = self.default_model
+
+        if self.provider == "openai":
+            document_sections: List[str] = []
+
+            if file_path:
+                # Reuse local PDF text extraction rather than relying on provider-side file APIs.
+                from src.parser import extract_text_from_pdf
+
+                document_sections.append(
+                    "Document Content:\n\n" + extract_text_from_pdf(file_path)
+                )
+
+            if image_bytes:
+                raise ValueError("Image input is not implemented for the OpenAI jobs client")
+
+            if schema:
+                schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+                prompt = (
+                    f"{prompt}\n\n"
+                    "Return only a valid JSON object that matches this schema exactly. "
+                    "Do not include markdown fences or any extra commentary.\n\n"
+                    f"JSON Schema:\n{schema_json}"
+                )
+
+            document_sections.append(prompt)
+            user_prompt = "\n\n".join(section for section in document_sections if section)
+
+            kwargs: Dict[str, Any] = {}
+            if schema:
+                kwargs["response_format"] = {"type": "json_object"}
+
+            last_exception: Optional[Exception] = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_INSTRUCTIONS_CACHE},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        **kwargs,
+                    )
+
+                    if response.choices and response.choices[0].message:
+                        content = response.choices[0].message.content
+                        if content:
+                            return content
+
+                    raise ValueError("No content generated from OpenAI response")
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        backoff_time = base_delay * (2 ** attempt) * (0.5 + 0.5 * random.random())
+                        logger.warning(
+                            f"LLM API error (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                            f"Retrying in {backoff_time:.2f}s"
+                        )
+                        await asyncio.sleep(backoff_time)
+                    else:
+                        logger.error(f"All {max_retries + 1} attempts failed for generate_content: {e}")
+
+            raise last_exception or ValueError("Failed to generate content after all retries")
 
         parts = []
         if image_bytes:
@@ -275,9 +365,14 @@ class PaperOperations(AsyncLLMClient):
     with actual LLM API calls (OpenAI, Anthropic, Google, etc.)
     """
 
-    def __init__(self, api_key: str, default_model: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        default_model: Optional[str] = None,
+        provider: str = DEFAULT_PROVIDER,
+    ):
         """Initialize the LLM client for paper operations."""
-        super().__init__(api_key, default_model=default_model)
+        super().__init__(api_key, default_model=default_model, provider=provider)
 
     async def _extract_single_metadata_field(
         self,
@@ -285,7 +380,7 @@ class PaperOperations(AsyncLLMClient):
         paper_content: str,
         schema: Type[BaseModel],
         status_callback: Callable[[str], None],
-        client: genai.Client,
+        client: Any,
         cache_key: Optional[str] = None,
         llm_model: Optional[str] = None,
     ) -> T:
@@ -354,7 +449,7 @@ class PaperOperations(AsyncLLMClient):
         self,
         paper_content: str,
         status_callback: Callable[[str], None],
-        client: genai.Client,
+        client: Any,
         cache_key: Optional[str] = None,
         llm_model: Optional[str] = None,
     ) -> TitleAuthorsAbstract:
@@ -374,7 +469,7 @@ class PaperOperations(AsyncLLMClient):
         self,
         paper_content: str,
         status_callback: Callable[[str], None],
-        client: genai.Client,
+        client: Any,
         cache_key: Optional[str] = None,
         llm_model: Optional[str] = None,
     ) -> InstitutionsKeywords:
@@ -393,7 +488,7 @@ class PaperOperations(AsyncLLMClient):
         self,
         paper_content: str,
         status_callback: Callable[[str], None],
-        client: genai.Client,
+        client: Any,
         cache_key: Optional[str] = None,
         llm_model: Optional[str] = None,
     ) -> SummaryAndCitations:
@@ -413,7 +508,7 @@ class PaperOperations(AsyncLLMClient):
         self,
         paper_content: str,
         status_callback: Callable[[str], None],
-        client: genai.Client,
+        client: Any,
         cache_key: Optional[str] = None,
         llm_model: Optional[str] = None,
     ) -> Highlights:
@@ -601,11 +696,23 @@ class PaperOperations(AsyncLLMClient):
             raise ValueError(f"Failed to extract DT for paper {paper_id}: {str(e)}")
 
 
-# Create a single instance to use throughout the application
-api_key = os.getenv("GOOGLE_API_KEY")
+def _get_provider_config() -> tuple[str, str]:
+    provider = os.getenv("DEFAULT_LLM_PROVIDER", DEFAULT_PROVIDER).lower()
+    if provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        env_name = "OPENAI_API_KEY"
+    elif provider == "gemini":
+        api_key = os.getenv("GOOGLE_API_KEY", "")
+        env_name = "GOOGLE_API_KEY"
+    else:
+        raise ValueError(f"Unsupported DEFAULT_LLM_PROVIDER: {provider}")
 
-if not api_key:
-    raise ValueError("GOOGLE_API_KEY environment variable is not set")
+    if not api_key:
+        raise ValueError(f"{env_name} environment variable is not set")
 
-llm_client = PaperOperations(api_key=api_key, default_model=DEFAULT_CHAT_MODEL)
-fast_llm_client = PaperOperations(api_key=api_key, default_model=FAST_CHAT_MODEL)
+    return provider, api_key
+
+
+provider, api_key = _get_provider_config()
+llm_client = PaperOperations(api_key=api_key, default_model=DEFAULT_CHAT_MODEL, provider=provider)
+fast_llm_client = PaperOperations(api_key=api_key, default_model=FAST_CHAT_MODEL, provider=provider)

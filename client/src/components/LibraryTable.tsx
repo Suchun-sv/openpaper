@@ -50,7 +50,7 @@ export function LibraryTable({
 	...props
 }: LibraryTableProps) {
 	const selectable = selectableProp ?? (onSelectFiles ? true : false);
-	const { papers, error: papersFetchError, isLoading, mutate } = usePapers();
+	const { papers, error: papersFetchError, isLoading, mutate } = usePapers({ detailed: true });
 	const { state: sidebarState } = useSidebar();
 	const isMobile = useIsMobile();
 	const [selectedPapers, setSelectedPapers] = useState<Set<string>>(new Set());

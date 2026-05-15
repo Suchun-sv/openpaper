@@ -31,13 +31,18 @@ class ModelType(Enum):
 class BaseLLMClient:
     """Unified LLM client that supports multiple providers"""
 
-    def __init__(self, default_provider: LLMProvider = LLMProvider.GEMINI):
-        self.default_provider = default_provider
+    def __init__(self, default_provider: LLMProvider = LLMProvider.OPENAI):
+        configured_default = os.getenv("DEFAULT_LLM_PROVIDER", default_provider.value)
+        try:
+            self.default_provider = LLMProvider(configured_default)
+        except ValueError:
+            logger.warning(
+                "Unsupported DEFAULT_LLM_PROVIDER=%s, falling back to %s",
+                configured_default,
+                default_provider.value,
+            )
+            self.default_provider = default_provider
         self._providers: Dict[LLMProvider, BaseLLMProvider] = {}
-
-        # Initialize all providers to ensure they are ready for use
-        for provider in LLMProvider:
-            self._initialize_provider(provider)
 
     def get_chat_model_options(
         self, exclude: Optional[List[LLMProvider]] = None
@@ -50,13 +55,21 @@ class BaseLLMClient:
             return model_name.lower()
 
         excluded = set(exclude or [])
-        return {
-            provider: _get_display_name(
-                self._get_model_for_type(ModelType.DEFAULT, provider)
-            )
-            for provider in self._providers.keys()
-            if provider not in excluded
-        }
+        options: Dict[LLMProvider, str] = {}
+        for provider in LLMProvider:
+            if provider in excluded:
+                continue
+            try:
+                options[provider] = _get_display_name(
+                    self._get_model_for_type(ModelType.DEFAULT, provider)
+                )
+            except Exception as e:
+                logger.debug(
+                    "Skipping unavailable LLM provider %s in chat model options: %s",
+                    provider.value,
+                    e,
+                )
+        return options
 
     def _initialize_provider(self, provider: LLMProvider) -> None:
         """Initialize a provider if not already done"""

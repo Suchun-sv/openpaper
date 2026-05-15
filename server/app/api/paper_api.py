@@ -25,7 +25,7 @@ from app.schemas.responses import ResponseCitation
 from app.schemas.user import CurrentUser
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 paper_router = APIRouter()
 
 CHECK_METADATA_INTERVAL_DAYS = 30
+
+
+def _paper_content_url(paper_id: str) -> str:
+    return f"/api/paper/{paper_id}/content"
 
 
 class SharePaperSchemaResponse(BaseModel):
@@ -67,6 +71,7 @@ class UpdatePaperFieldsSchema(BaseModel):
 
 @paper_router.get("/all")
 async def get_paper_ids(
+    request: Request,
     db: Session = Depends(get_db),
     detailed: bool = False,
     current_user: CurrentUser = Depends(get_required_user),
@@ -75,14 +80,6 @@ async def get_paper_ids(
     Get all paper IDs
     """
     papers: List[Paper] = paper_crud.get_multi_uploads_completed(db, user=current_user)
-
-    # Bulk retrieve presigned URLs for all papers (optimized with parallelization)
-    file_urls = {}
-    if detailed:
-        file_urls = s3_service.get_cached_presigned_urls_bulk(
-            db=db,
-            papers=papers,
-        )
 
     data = [
         {
@@ -97,7 +94,7 @@ async def get_paper_ids(
             "preview_url": paper.preview_url,
             "size_in_kb": paper.size_in_kb,
             "publish_date": (str(paper.publish_date) if paper.publish_date else None),
-            "file_url": file_urls.get(str(paper.id)),
+            "file_url": _paper_content_url(str(paper.id)) if detailed else None,
             "tags": [{"id": str(tag.id), "name": tag.name, "color": tag.color} for tag in paper.tags],  # type: ignore
         }
         for paper in papers
@@ -164,16 +161,40 @@ async def get_paper_file_url(
     if not paper:
         return JSONResponse(status_code=404, content={"message": "Document not found"})
 
-    file_url = s3_service.get_cached_presigned_url(
-        db,
-        paper_id=str(paper.id),
-        object_key=str(paper.s3_object_key),
-        current_user=current_user,
+    return JSONResponse(
+        status_code=200,
+        content={"file_url": _paper_content_url(str(paper.id))},
     )
-    if not file_url:
+
+
+@paper_router.get("/{id}/content")
+async def get_paper_content(
+    id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_required_user),
+) -> Response:
+    paper = paper_crud.get(db, id=id, user=current_user)
+    if not paper or not paper.s3_object_key:
         return JSONResponse(status_code=404, content={"message": "File not found"})
 
-    return JSONResponse(status_code=200, content={"file_url": file_url})
+    try:
+        range_header = request.headers.get("range")
+        s3_response = s3_service.get_object(str(paper.s3_object_key), range_header)
+        body = s3_response["Body"].read()
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": s3_response.get("ContentType", "application/pdf"),
+        }
+        if "ContentLength" in s3_response:
+            headers["Content-Length"] = str(s3_response["ContentLength"])
+        if "ContentRange" in s3_response:
+            headers["Content-Range"] = str(s3_response["ContentRange"])
+        status_code = 206 if "ContentRange" in s3_response else 200
+        return Response(content=body, status_code=status_code, headers=headers)
+    except Exception as e:
+        logger.error(f"Error proxying paper content for {id}: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"message": "Error loading file"})
 
 
 @paper_router.get("/note")
@@ -550,7 +571,7 @@ async def get_pdf(
     except Exception:
         logger.exception("Error updating enriched data for paper %s", id, exc_info=True)
 
-    paper_data["file_url"] = signed_url
+    paper_data["file_url"] = _paper_content_url(str(paper.id))
     paper_data["summary_citations"] = [  # type: ignore
         ResponseCitation.model_validate(citation).model_dump()
         for citation in paper.summary_citations or []

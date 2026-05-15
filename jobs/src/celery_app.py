@@ -44,6 +44,7 @@ celery_app.conf.update(
     broker_heartbeat=30,
     broker_heartbeat_checkrate=2.0,
     worker_disable_rate_limits=True,
+    worker_enable_remote_control=False,
     # Memory and resource limits
     worker_max_memory_per_child=500000,  # 500MB in KB
 )

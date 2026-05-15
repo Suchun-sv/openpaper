@@ -1,6 +1,19 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+function getApiBaseUrl() {
+    if (process.env.NEXT_PUBLIC_API_URL) {
+        return process.env.NEXT_PUBLIC_API_URL;
+    }
+
+    if (typeof window !== 'undefined') {
+        const protocol = window.location.protocol;
+        const hostname = window.location.hostname;
+        return `${protocol}//${hostname}:8000`;
+    }
+
+    return 'http://localhost:8000';
+}
 
 export async function fetchFromApi(endpoint: string, options: RequestInit = {}) {
+    const API_BASE_URL = getApiBaseUrl();
     const headers: HeadersInit = {};
 
     // Only set Content-Type to application/json if we're not sending FormData
@@ -52,6 +65,7 @@ export async function fetchStreamFromApi(
     endpoint: string,
     options: RequestInit = {}
 ): Promise<ReadableStream<Uint8Array>> {
+    const API_BASE_URL = getApiBaseUrl();
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
         ...options,
         headers: {

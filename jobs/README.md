@@ -162,10 +162,13 @@ The following environment variables are required to run the Jobs Service:
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key for S3.                           | Yes      |
 | `AWS_REGION`            | The AWS region for the S3 bucket.                | No       |
 | `S3_BUCKET_NAME`        | The name of the S3 bucket for file storage.      | Yes      |
-| `CLOUDFLARE_BUCKET_NAME`| The name of the Cloudflare R2 bucket (if used).  | Yes      |
+| `CLOUDFLARE_BUCKET_NAME`| Public host/domain used to serve uploaded files. | Yes      |
+| `S3_ENDPOINT_URL`       | Optional S3-compatible API endpoint, e.g. R2.    | No       |
 | `CELERY_BROKER_URL`     | The URL for the Celery message broker (RabbitMQ).   | Yes      |
 | `CELERY_RESULT_BACKEND` | The URL for the Celery result backend (Redis).   | Yes      |
-| `LLM_API_KEY`           | The API key for the LLM service.                 | Yes      |
+| `DEFAULT_LLM_PROVIDER`  | Default LLM provider. Use `openai` or `gemini`.  | No       |
+| `OPENAI_API_KEY`        | API key when `DEFAULT_LLM_PROVIDER=openai`.      | Yes*     |
+| `GOOGLE_API_KEY`        | API key when `DEFAULT_LLM_PROVIDER=gemini`.      | Yes*     |
 
 ### Running Locally
 

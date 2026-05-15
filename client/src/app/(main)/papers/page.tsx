@@ -89,7 +89,7 @@ const PageSkeleton = () => (
 );
 
 function PapersPageContent() {
-    const { papers, isLoading, mutate } = usePapers();
+    const { papers, isLoading, mutate } = usePapers({ detailed: true });
     const { subscription, loading: subscriptionLoading } = useSubscription();
     const router = useRouter();
     const [isCreateProjectDialogOpen, setCreateProjectDialogOpen] = useState(false);

@@ -1,10 +1,12 @@
 import logging
+import os
 import uuid
 from typing import Annotated, Optional
 
 from app.database.crud.subscription_crud import subscription_crud
 from app.database.crud.user_crud import user as user_crud
 from app.database.database import get_db
+from app.schemas.user import UserUpdate
 from app.schemas.user import CurrentUser
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader
@@ -14,9 +16,50 @@ logger = logging.getLogger(__name__)
 
 # Session cookie name
 SESSION_COOKIE_NAME = "session_token"
+DEV_DEFAULT_USER_EMAIL = os.getenv("DEV_DEFAULT_USER_EMAIL", "suchunsv@gmail.com")
+DEV_AUTH_BYPASS = os.getenv("DEV_AUTH_BYPASS", "true").lower() in ("true", "1", "yes")
 
 # Setup header auth
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+
+def _build_current_user(db_user, db: Session) -> CurrentUser:
+    if not db_user.id:
+        raise ValueError("User ID is missing in the database record.")
+
+    return CurrentUser(
+        id=uuid.UUID(str(db_user.id)),
+        email=str(db_user.email),
+        name=db_user.name,  # type: ignore
+        is_admin=bool(db_user.is_admin),
+        picture=db_user.picture,  # type: ignore
+        is_email_verified=bool(db_user.is_email_verified),
+        is_active=subscription_crud.is_user_active(db, db_user),
+        is_blocked=bool(db_user.is_blocked),
+    )
+
+
+def _get_or_create_dev_user(db: Session) -> Optional[CurrentUser]:
+    if not DEV_AUTH_BYPASS or not DEV_DEFAULT_USER_EMAIL:
+        return None
+
+    db_user = user_crud.get_by_email(db=db, email=DEV_DEFAULT_USER_EMAIL)
+    if not db_user:
+        db_user = user_crud.create_email_user(
+            db,
+            email=DEV_DEFAULT_USER_EMAIL,
+            name=DEV_DEFAULT_USER_EMAIL,
+        )
+        db_user = user_crud.verify_email(db=db, user=db_user)
+        logger.info("Created development auth user: %s", DEV_DEFAULT_USER_EMAIL)
+    elif not db_user.name:
+        db_user = user_crud.update(
+            db=db,
+            db_obj=db_user,
+            obj_in=UserUpdate(name=DEV_DEFAULT_USER_EMAIL),
+        )
+
+    return _build_current_user(db_user, db)
 
 
 def get_current_user(
@@ -40,37 +83,19 @@ def get_current_user(
         token = request.cookies.get(SESSION_COOKIE_NAME)
 
     if not token:
-        return None
+        return _get_or_create_dev_user(db)
 
     # Get session from database
     db_session = user_crud.get_by_token(db=db, token=token)
     if not db_session:
-        return None
+        return _get_or_create_dev_user(db)
 
     # Get user from session
     db_user = user_crud.get(db=db, id=db_session.user_id)
     if not db_user or not db_user.is_active:
-        return None
+        return _get_or_create_dev_user(db)
 
-    if not db_user.id:
-        logger.error("User ID is missing in the database record.")
-        return None
-
-    id_as_uuid = uuid.UUID(str(db_user.id))
-
-    is_user_active = subscription_crud.is_user_active(db, db_user)
-
-    # Return CurrentUser model
-    return CurrentUser(
-        id=id_as_uuid,
-        email=str(db_user.email),
-        name=db_user.name,  # type: ignore
-        is_admin=bool(db_user.is_admin),
-        picture=db_user.picture,  # type: ignore
-        is_email_verified=bool(db_user.is_email_verified),
-        is_active=is_user_active,
-        is_blocked=bool(db_user.is_blocked),
-    )
+    return _build_current_user(db_user, db)
 
 
 async def get_required_user(

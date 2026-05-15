@@ -9,10 +9,17 @@ import posthog from 'posthog-js'
 import { PostHogProvider as PHProvider } from 'posthog-js/react'
 import { useIsDarkMode } from "@/hooks/useDarkMode"
 
+const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY
+const POSTHOG_ENABLED = Boolean(POSTHOG_KEY)
+
 // Note: This provider does not work wherever adblock is enabled.
 export function PostHogProvider({ children }: { children: React.ReactNode }) {
     useEffect(() => {
-        posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY as string, {
+        if (!POSTHOG_ENABLED) {
+            return
+        }
+
+        posthog.init(POSTHOG_KEY as string, {
             api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com',
             person_profiles: 'identified_only', // or 'always' to create profiles for anonymous users as well
             capture_pageview: false // Disable automatic pageview capture, as we capture manually
@@ -35,7 +42,7 @@ function PostHogPageView() {
 
     // Track pageviews
     useEffect(() => {
-        if (pathname && posthog) {
+        if (POSTHOG_ENABLED && pathname && posthog) {
             let url = window.origin + pathname
             if (searchParams.toString()) {
                 url = url + "?" + searchParams.toString();
